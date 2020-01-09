@@ -370,6 +370,7 @@ class G_synthesis(nn.Module):
         self.nf = lambda stage: min(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_max)
         self.structure = structure
         self.resolution_log2 = int(np.log2(resolution))
+        print('resolution_log2', self.resolution_log2)
         # - 2 means we start from feature map with height and width equals 4.
         # as this example, we get num_layers = 18.
         num_layers = self.resolution_log2 * 2 - 2
@@ -402,6 +403,7 @@ class G_synthesis(nn.Module):
                                     use_instance_norm, use_style)
         self.Gblock = []
         for i in range(3, self.resolution_log2, 1):
+            print('i', i)
             self.Gblock.append(GBlock(i, use_wscale, use_noise, use_pixel_norm, use_instance_norm, self.noise_inputs))
 
     def forward(self, dlatent):
@@ -422,7 +424,8 @@ class G_synthesis(nn.Module):
 
             for block in self.Gblock:
                 x = block(x, dlatent)
-
+                print('x', x.shape)
+            print('upsample done', x.shape)
             x = self.channel_shrinkage(x)
             images_out = self.torgb(x)
             return images_out
