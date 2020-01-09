@@ -342,7 +342,7 @@ class G_mapping(nn.Module):
 class G_synthesis(nn.Module):
     def __init__(self,
                  dlatent_size,  # Disentangled latent (W) dimensionality.
-                 resolution,  # Output resolution (1024 x 1024 by default).
+                 resolution=1024,  # Output resolution (1024 x 1024 by default).
                  fmap_base=8192,  # Overall multiplier for the number of feature maps.
                  num_channels=3,  # Number of output color channels.
                  structure='fixed',  # 'fixed' = no progressive growing, 'linear' = human-readable, 'recursive' = efficient, 'auto' = select automatically.
@@ -400,9 +400,47 @@ class G_synthesis(nn.Module):
         self.conv1 = Conv2d(input_channels=self.nf(1), output_channels=self.nf(1), kernel_size=3, use_wscale=use_wscale)
         self.adaIn2 = LayerEpilogue(self.nf(1), dlatent_size, use_wscale, use_noise, use_pixel_norm,
                                     use_instance_norm, use_style)
-        self.Gblock = []
-        for i in range(3, self.resolution_log2, 1):
-            self.Gblock.append(GBlock(i, use_wscale, use_noise, use_pixel_norm, use_instance_norm, self.noise_inputs))
+
+        # Common Block
+        # 4 x 4 -> 8 x 8
+        res = 3
+        self.GBlock1 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 8 x 8 -> 16 x 16
+        res = 4
+        self.GBlock2 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 16 x 16 -> 32 x 32
+        res = 5
+        self.GBlock3 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 32 x 32 -> 64 x 64
+        res = 6
+        self.GBlock4 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 64 x 64 -> 128 x 128
+        res = 7
+        self.GBlock5 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 128 x 128 -> 256 x 256
+        res = 8
+        self.GBlock6 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 256 x 256 -> 512 x 512
+        res = 9
+        self.GBlock7 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
+
+        # 512 x 512 -> 1024 x 1024
+        res = 10
+        self.GBlock8 = GBlock(res, use_wscale, use_noise, use_pixel_norm, use_instance_norm,
+                              self.noise_inputs)
 
     def forward(self, dlatent):
         """
@@ -420,8 +458,37 @@ class G_synthesis(nn.Module):
             x = self.conv1(x)
             x = self.adaIn2(x, self.noise_inputs[1], dlatent[:, 1])
 
-            for block in self.Gblock:
-                x = block(x, dlatent)
+            # block 1:
+            # 4 x 4 -> 8 x 8
+            x = self.GBlock1(x, dlatent)
+
+            # block 2:
+            # 8 x 8 -> 16 x 16
+            x = self.GBlock2(x, dlatent)
+
+            # block 3:
+            # 16 x 16 -> 32 x 32
+            x = self.GBlock3(x, dlatent)
+
+            # block 4:
+            # 32 x 32 -> 64 x 64
+            x = self.GBlock4(x, dlatent)
+
+            # block 5:
+            # 64 x 64 -> 128 x 128
+            x = self.GBlock5(x, dlatent)
+
+            # block 6:
+            # 128 x 128 -> 256 x 256
+            x = self.GBlock6(x, dlatent)
+
+            # block 7:
+            # 256 x 256 -> 512 x 512
+            x = self.GBlock7(x, dlatent)
+
+            # block 8:
+            # 512 x 512 -> 1024 x 1024
+            x = self.GBlock8(x, dlatent)
 
             x = self.channel_shrinkage(x)
             images_out = self.torgb(x)
@@ -430,20 +497,20 @@ class G_synthesis(nn.Module):
 
 class StyleGenerator(nn.Module):
     def __init__(self,
-                 latent_size=512,
-                 resolution=1024,
+                 mapping_fmaps=512,
                  style_mixing_prob=0.9,  # Probability of mixing styles during training. None = disable.
                  truncation_psi=0.7,  # Style strength multiplier for the truncation trick. None = disable.
                  truncation_cutoff=8,  # Number of layers for which to apply the truncation trick. None = disable.
                  **kwargs
                  ):
         super(StyleGenerator, self).__init__()
+        self.mapping_fmaps = mapping_fmaps
         self.style_mixing_prob = style_mixing_prob
         self.truncation_psi = truncation_psi
         self.truncation_cutoff = truncation_cutoff
 
-        self.mapping = G_mapping(latent_size, **kwargs)
-        self.synthesis = G_synthesis(latent_size, resolution, **kwargs)
+        self.mapping = G_mapping(self.mapping_fmaps, **kwargs)
+        self.synthesis = G_synthesis(self.mapping_fmaps, **kwargs)
 
     def forward(self, latents1):
         dlatents1, num_layers = self.mapping(latents1)
@@ -451,12 +518,36 @@ class StyleGenerator(nn.Module):
         # 这里的unsqueeze不能使用inplace操作, 如果这样的话, 反向传播的链条会断掉的.
         dlatents1 = dlatents1.unsqueeze(1)
         dlatents1 = dlatents1.expand(-1, int(num_layers), -1)
+
+        # Add mixing style mechanism.
+        # with torch.no_grad():
+        #     latents2 = torch.randn(latents1.shape).to(latents1.device)
+        #     dlatents2, num_layers = self.mapping(latents2)
+        #     dlatents2 = dlatents2.unsqueeze(1)
+        #     dlatents2 = dlatents2.expand(-1, int(num_layers), -1)
+        #
+        #     # TODO: original NvLABs produce a placeholder "lod", this mechanism was not added here.
+        #     cur_layers = num_layers
+        #     mix_layers = num_layers
+        #     if np.random.random() < self.style_mixing_prob:
+        #         mix_layers = np.random.randint(1, cur_layers)
+        #
+        #     # NvLABs: dlatents = tf.where(tf.broadcast_to(layer_idx < mixing_cutoff, tf.shape(dlatents)), dlatents, dlatents2)
+        #     for i in range(num_layers):
+        #         if i >= mix_layers:
+        #             dlatents1[:, i, :] = dlatents2[:, i, :]
+
         # Apply truncation trick.
         if self.truncation_psi and self.truncation_cutoff:
             coefs = np.ones([1, num_layers, 1], dtype=np.float32)
             for i in range(num_layers):
                 if i < self.truncation_cutoff:
                     coefs[:, i, :] *= self.truncation_psi
+            """Linear interpolation.
+               a + (b - a) * t (a = 0)
+               reduce to
+               b * t
+            """
 
             dlatents1 = dlatents1 * torch.Tensor(coefs).to(dlatents1.device)
 
@@ -607,10 +698,3 @@ def R2Penalty(fake_img, f):
     fake_grads = undo_loss_scaling(fake_grads)
     r2_penalty = torch.sum(torch.mul(fake_grads, fake_grads))
     return r2_penalty
-
-
-if __name__ == '__main__':
-    gererator = StyleGenerator(512, 256)
-    indata = torch.zeros((1, 512))
-    out = gererator(indata)
-    print(out.shape)
